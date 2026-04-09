@@ -408,7 +408,7 @@ ingress:
     domain: "terrakube-reg.laptop"
     path: "/"
     pathType: "Prefix"
-    ingressClassName: "trafik"
+    ingressClassName: "traefik"
     useTls: false
     tlsSecretName: tls-secret-reg-terrakube
     annotations:
