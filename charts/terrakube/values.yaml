@@ -1,0 +1,485 @@
+## Global Name
+name: "terrakube"
+
+global:
+  imagePullSecrets: []
+
+enableIPv6: true
+
+## Azure Active Directory Security
+security:
+  useOpenLDAP: true
+  adminGroup: "TERRAKUBE_ADMIN"
+  patSecret: "bAUaAojZP3XhkuE2rWBtR3gRAHPzQKkx"
+  internalSecret: "AxxPdgpCi72f8WhMXCTGhtfMRp6AuBfj"
+  dexClientId: "example-app"
+  dexClientScope: "email openid profile offline_access groups"
+  dexIssuerUri: "http://terrakube-api.laptop/dex"
+  existingSecret: false
+  ldapConfigSecretName: terrakube-openldap-secrets
+
+## OpenLdap
+openldap:
+  adminUser: "admin"
+  adminPass: "admin"
+  baseRoot: "dc=example,dc=org"
+  image: "bitnamilegacy/openldap"
+  version: "latest"
+  imagePullSecrets: []
+  initContainers: []
+  podLabels: {}
+  podAnnotations: {}
+  securityContext: {}
+  containerSecurityContext: {}
+  revisionHistoryLimit: 3
+
+## Dex
+dex:
+  enabled: true
+  existingSecret: false
+  revisionHistoryLimit: 3
+  config:
+    issuer: http://terrakube-api.laptop/dex
+
+    storage:
+      type: memory
+    web:
+      http: 0.0.0.0:5556
+      allowedOrigins: ['*']
+    oauth2:
+      responseTypes: ["code", "token", "id_token"]
+      skipApprovalScreen: true
+
+    connectors:
+    - type: ldap
+      name: OpenLDAP
+      id: ldap
+      config:
+        # The following configurations seem to work with OpenLDAP:
+        #
+        # 1) Plain LDAP, without TLS:
+        host: terrakube-openldap-service:1389
+        insecureNoSSL: true
+        #
+        # 2) LDAPS without certificate validation:
+        #host: localhost:636
+        #insecureNoSSL: false
+        #insecureSkipVerify: true
+        #
+        # 3) LDAPS with certificate validation:
+        #host: YOUR-HOSTNAME:636
+        #insecureNoSSL: false
+        #insecureSkipVerify: false
+        #rootCAData: 'CERT'
+        # ...where CERT="$( base64 -w 0 your-cert.crt )"
+
+        # This would normally be a read-only user.
+        bindDN: cn=admin,dc=example,dc=org
+        bindPW: admin
+
+        usernamePrompt: Email Address
+
+        userSearch:
+          baseDN: ou=users,dc=example,dc=org
+          filter: "(objectClass=person)"
+          username: mail
+          # "DN" (case sensitive) is a special attribute name. It indicates that
+          # this value should be taken from the entity's DN not an attribute on
+          # the entity.
+          idAttr: DN
+          emailAttr: mail
+          nameAttr: cn
+
+        groupSearch:
+          baseDN: ou=Groups,dc=example,dc=org
+          filter: "(objectClass=groupOfNames)"
+
+          userMatchers:
+            # A user is a member of a group when their DN matches
+            # the value of a "member" attribute on the group entity.
+          - userAttr: DN
+            groupAttr: member
+
+          # The group name should be the "cn" value.
+          nameAttr: cn
+
+    staticClients:
+    - id: example-app
+      redirectURIs:
+      - 'http://terrakube-ui.laptop'
+      - '/device/callback'
+      - 'http://localhost:10000/login'
+      - 'http://localhost:10001/login'
+      name: 'example-app'
+      public: true
+  volumes:
+  - name: gcp-credentials
+    secret:
+      secretName: terrakube-dex-secrets
+      items:
+      - key: "gcp-credentials"
+        path: "gcp-credentials"
+  volumeMount:
+  - name: gcp-credentials
+    mountPath: /etc/gcp/secret
+    readOnly: true
+
+
+## Terraform Storage
+storage:
+  defaultStorage: true
+  azure:
+    storageAccountName: ""
+    storageAccountResourceGroup: ""
+    storageAccountAccessKey: ""
+  aws:
+    accessKey: ""
+    secretKey: ""
+    bucketName: ""
+    region: ""
+  minio:
+    accessKey: ""
+    secretKey: ""
+    bucketName: ""
+    endpoint: ""
+  gcp:
+    projectId: ""
+    bucketName: ""
+    credentials: ""
+  default:
+    region: "us-east-1"
+    endpoint: ""
+
+
+# Default Storage Minio Configuration
+minio:
+  image:
+    repository: bitnamilegacy/minio
+    tag: 2025.7.23-debian-12-r3
+  clientImage:
+    repository: bitnamilegacy/minio-client
+    tag: 2025.7.21-debian-12-r2
+  console:
+    enabled: false
+  auth:
+    rootUser: "admin"
+    rootPassword: "superadmin"
+  defaultBuckets: "terrakube"
+
+# Default Database Postgresql
+postgresql:
+  image:
+    repository: bitnamilegacy/postgresql
+    tag: 17.6.0-debian-12-r4
+  auth:
+    username: "terrakube"
+    password: "terrakubepassword"
+    database: "terrakube"
+
+# Default Redis Configuration
+redis:
+  image:
+    repository: bitnamilegacy/redis
+    tag: 8.2.1-debian-12-r0
+  architecture: "standalone"
+  auth:
+    enabled: true
+    password: "7p9iWVeRV4S944"
+
+## API properties
+api:
+  existingSecret: false
+  enabled: true
+  image: azbuilder/api-server
+  version: ""
+  replicaCount: "1"
+  serviceType: ClusterIP
+  serviceAccountName: ""
+  serviceAnnotations: {}
+  revisionHistoryLimit: 3
+  automountServiceAccountToken: true
+  dynamicCredentials:
+    enabled: false
+    publicKey: ""
+    publicKeyPath: "/etc/terrakube/credentials/public-key.pem"
+    privateKey: ""
+    privateKeyPath: "/etc/terrakube/credentials/private-key.pem"
+  otel:
+    enabled: false
+    metrics:
+      port: "9464"
+      host: "0.0.0.0"
+    traces:
+      type: ""
+      # endpoint its just example, change it to your jaeger endpoint
+      endpoint: "http://terrakube-api.laptop:9411/api/v2/spans" 
+  rbac:
+    create: false
+    roleName: "terrakube-api-role"
+    roleBindingName: "terrakube-api-role-binding"
+  ephemeralExecution:
+    enabled: false
+    secretName: terrakube-executor-secrets
+  secrets:
+   - terrakube-api-secrets
+  configMaps:
+   - terrakube-api-config
+  resources: {}
+  podLabels: {}
+  podAnnotations: {}
+  defaultDatabase: true
+  defaultRedis: true
+  loadSampleData: true
+  terraformReleasesUrl: "https://releases.hashicorp.com/terraform/index.json"
+  tofuReleasesUrl: "https://api.github.com/repos/opentofu/opentofu/releases"
+  securityContext: {}
+  containerSecurityContext: {}
+  imagePullSecrets: []
+  initContainers: []
+  startupProbe:
+    initialDelaySeconds: 30
+    failureThreshold: 30
+    periodSeconds: 5
+  readinessProbe:
+    periodSeconds: 10
+  livenessProbe:
+    periodSeconds: 10
+  cache:
+    moduleCacheMaxTotal: "128"
+    moduleCacheMaxIdle: "128"
+    moduleCacheMinIdle: "64"
+    moduleCacheTimeout: "600000"
+    moduleCacheSchedule: "0 */3 * ? * *"
+  properties:
+    databaseType: "POSTGRESQL"
+    databaseHostname: ""
+    databaseName: ""
+    databaseUser: ""
+    databaseSchema: "public"
+    databasePassword: ""
+    databaseSslMode: "disable"
+    databasePort: "5432"
+    redisHostname: ""
+    redisPassword: ""
+    redisPort: "6379"
+    executorUrl: "http://terrakube-executor-service:8090"
+    
+## DONT FORGET TO UPDATE THE PORT DEPENDING OF THE DATABASE BY DEFAULT IS USING THE POSTGRESQL PORT
+## SslMode values are disable, allow, prefer, require, verify-ca, verify-full. Default mode is "disable".   
+## Reference: https://jdbc.postgresql.org/documentation/publicapi/org/postgresql/PGProperty.html#SSL_MODE
+
+## Executor properties
+executor:
+  existingSecret: false
+  enabled: true
+  image: "azbuilder/executor"
+  version: ""
+  replicaCount: "1"
+  serviceType: ClusterIP
+  serviceAccountName: ""
+  revisionHistoryLimit: 3
+  secrets:
+   - terrakube-executor-secrets
+  configMaps:
+   - terrakube-executor-config
+  otel:
+    enabled: false
+    metrics:
+      port: "9464"
+      host: "0.0.0.0"
+    traces:
+      type: jaeger
+      # endpoint its just example, change it to your jaeger endpoint
+      endpoint: "http://terrakube-api.laptop:9411/api/v2/spans" 
+  resources: {}
+  podLabels: {}
+  podAnnotations: {}
+  apiServiceUrl: "http://terrakube-api-service:8080"
+  properties:
+    toolsRepository: "https://github.com/terrakube-io/terrakube-extensions"
+    toolsBranch: "main"
+  securityContext: {}
+  containerSecurityContext: {}
+  imagePullSecrets: []
+  initContainers: []
+  startupProbe:
+    failureThreshold: 30
+    periodSeconds: 5
+  readinessProbe:
+    periodSeconds: 10
+  livenessProbe:
+    periodSeconds: 10
+
+## Registry properties
+registry:
+  enabled: true
+  existingSecret: false
+  image: azbuilder/open-registry
+  version: ""
+  replicaCount: "1"
+  serviceType: ClusterIP
+  serviceAccountName: ""
+  serviceAnnotations: {}
+  revisionHistoryLimit: 3
+  secrets:
+   - terrakube-registry-secrets
+  configMaps:
+   - terrakube-registry-config
+  otel:
+    enabled: false
+    metrics:
+      port: "9464"
+      host: "0.0.0.0"
+    traces:
+      type: jaeger
+      # endpoint its just example, change it to your jaeger endpoint
+      endpoint: "http://terrakube-api.laptop:9411/api/v2/spans" 
+  resources: {}
+  podAnnotations: {}
+  podLabels: {}
+  securityContext: {}
+  containerSecurityContext: {}
+  imagePullSecrets: []
+  initContainers: []
+  startupProbe:
+    failureThreshold: 30
+    periodSeconds: 5
+  readinessProbe:
+    periodSeconds: 10
+  livenessProbe:
+    periodSeconds: 10
+
+## UI Properties
+ui:
+  enabled: true
+  existingSecret: false
+  image: azbuilder/terrakube-ui
+  version: ""
+  replicaCount: "1"
+  serviceType: ClusterIP
+  serviceAccountName: ""
+  serviceAnnotations: {}
+  revisionHistoryLimit: 3
+  resources: {}
+  podLabels: {}
+  podAnnotations: {}
+  securityContext: {}
+  containerSecurityContext: {}
+  imagePullSecrets: []
+  initContainers: []
+
+## Ingress properties
+ingress:
+  useTls: false
+  includeTlsHosts: true
+  controller: "generic"  # Options: "generic", "aws", "gke, gatewayapi"
+
+  gatewayapi:
+    apiVersion: v1beta1
+    enabled: false
+    gateways: []
+    annotations: {}
+
+  ui:
+    enabled: true
+    domain: "terrakube-ui.laptop"
+    path: "/"
+    pathType: "Prefix"
+    ingressClassName: "traefik"
+    useTls: true
+    tlsSecretName: tls-secret-ui-terrakube
+    annotations:
+      #nginx.ingress.kubernetes.io/use-regex: "true"
+  
+  api:
+    enabled: true
+    domain: "terrakube-api.laptop"
+    path: "/"
+    pathType: "Prefix"
+    ingressClassName: "traefik"
+    useTls: false
+    tlsSecretName: tls-secret-api-terrakube
+    annotations:
+      #nginx.ingress.kubernetes.io/use-regex: "true"
+      #nginx.ingress.kubernetes.io/proxy-set-headers: "terrakube/custom-headers"
+
+  registry:
+    enabled: true
+    domain: "terrakube-reg.laptop"
+    path: "/"
+    pathType: "Prefix"
+    ingressClassName: "trafik"
+    useTls: false
+    tlsSecretName: tls-secret-reg-terrakube
+    annotations:
+      #nginx.ingress.kubernetes.io/use-regex: "true"
+      #nginx.ingress.kubernetes.io/proxy-set-headers: "terrakube/custom-headers"
+  dex:
+    enabled: true
+    path: "/dex/"
+    pathType: "Prefix"
+    annotations:
+      #nginx.ingress.kubernetes.io/use-regex: "true"
+      #nginx.ingress.kubernetes.io/proxy-set-headers: "terrakube/custom-headers"
+  executor:
+    enabled: false
+    domain: "terrakube-executor.laptop"
+    path: "/"
+    pathType: "Prefix"
+    ingressClassName: "traefik"
+    tlsSecretName: tls-secret-executor-terrakube    
+    annotations:
+      #nginx.ingress.kubernetes.io/use-regex: "true"
+  
+  # AWS specific configuration
+  aws:
+    enabled: false
+    annotations:
+      # AWS ALB annotations
+      kubernetes.io/ingress.class: alb
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
+      alb.ingress.kubernetes.io/ssl-redirect: '443'
+    certificateArn: ""
+    targetGroupBinding:
+      create: false
+      apiTargetGroupARN: ""
+      uiTargetGroupARN: ""
+      registryTargetGroupARN: ""
+    sharedLoadBalancer:
+      enabled: false
+      groupName: ""
+    securityGroups: []
+    subnets: []
+
+  # GKE specific configuration
+  gke:
+    enabled: false
+    annotations:
+      kubernetes.io/ingress.class: gce
+    # Per-service static IP names for individual load balancers
+    uiStaticIPName: ""         
+    apiStaticIPName: ""
+    registryStaticIPName: ""
+    executorStaticIPName: ""
+    managedCertificate:
+      create: false
+    backendConfig:
+      create: false
+      timeout: 30
+      # Per-service security policies (optional)
+      uiSecurityPolicy: ""        # Cloud Armor policy for UI (user access restriction)
+      apiSecurityPolicy: ""       # Cloud Armor policy for API (usually empty - external access needed)
+      registrySecurityPolicy: ""  # Cloud Armor policy for Registry (usually empty - external access needed)
+      executorSecurityPolicy: ""  # Cloud Armor policy for Executor (usually empty if exposed)
+    frontendConfig:
+      create: false
+      redirectToHttps: true
+    externalDNS:
+      perIngressProxy:         # Control whether ExternalDNS creates proxy records (Cloudflare)
+        ui: false
+        api: false
+        registry: false
+        dex: false
+        executor: false
