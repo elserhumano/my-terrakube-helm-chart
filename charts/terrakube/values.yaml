@@ -1,4 +1,29 @@
-## Global Name
+## =============================================================
+## Terrakube Helm Chart — values.yaml para K3s con Traefik
+## IP de la VM: 192.168.167.40  |  dominio: .laptop
+## Ingress: Traefik nativo de K3s (NO nginx)
+## TLS: deshabilitado (consistentemente) para el POC
+##
+## ANTES DE INSTALAR:
+##   1. Agregar en /etc/hosts de la VM Y de Windows:
+##        192.168.167.40  terrakube-ui.laptop
+##        192.168.167.40  terrakube-api.laptop
+##        192.168.167.40  terrakube-reg.laptop
+##
+##   2. Verificar que Traefik tenga EXTERNAL-IP asignada:
+##        kubectl get svc -n kube-system traefik
+##      Si está en <pending>:
+##        kubectl patch svc traefik -n kube-system \
+##          -p '{"spec":{"externalIPs":["192.168.167.40"]}}'
+##
+##   3. Crear namespace:
+##        kubectl create namespace terrakube
+##
+##   4. Instalar:
+##        helm install --debug --values values-terrakube-k3s.yaml \
+##          terrakube terrakube-repo/terrakube -n terrakube
+## =============================================================
+
 name: "terrakube"
 
 global:
@@ -6,19 +31,25 @@ global:
 
 enableIPv6: true
 
-## Azure Active Directory Security
+## ---------------------------------------------------------------
+## Security / OIDC
+## NOTA: patSecret e internalSecret deben ser exactamente 32 chars
+## ---------------------------------------------------------------
 security:
   useOpenLDAP: true
   adminGroup: "TERRAKUBE_ADMIN"
-  patSecret: "bAUaAojZP3XhkuE2rWBtR3gRAHPzQKkx"
-  internalSecret: "AxxPdgpCi72f8WhMXCTGhtfMRp6AuBfj"
+  patSecret: "bAUaAojZP3XhkuE2rWBtR3gRAHPzQKkx"        # 32 chars — OK
+  internalSecret: "AxxPdgpCi72f8WhMXCTGhtfMRp6AuBfj"   # 32 chars — OK
   dexClientId: "example-app"
   dexClientScope: "email openid profile offline_access groups"
+  ## CRITICO: usar http:// — debe coincidir con el issuer de DEX
   dexIssuerUri: "http://terrakube-api.laptop/dex"
   existingSecret: false
   ldapConfigSecretName: terrakube-openldap-secrets
 
-## OpenLdap
+## ---------------------------------------------------------------
+## OpenLDAP
+## ---------------------------------------------------------------
 openldap:
   adminUser: "admin"
   adminPass: "admin"
@@ -33,19 +64,28 @@ openldap:
   containerSecurityContext: {}
   revisionHistoryLimit: 3
 
-## Dex
+## ---------------------------------------------------------------
+## DEX — OIDC broker
+##
+## CRITICO: issuer y redirectURIs deben ser http:// (sin TLS)
+## y deben coincidir exactamente con los dominios del ingress.
+## Si hay cualquier mezcla http/https el browser bloquea el login.
+## ---------------------------------------------------------------
 dex:
   enabled: true
   existingSecret: false
   revisionHistoryLimit: 3
   config:
+    ## CRITICO: http:// — nunca https:// si el ingress API no tiene TLS
     issuer: http://terrakube-api.laptop/dex
 
     storage:
       type: memory
+
     web:
       http: 0.0.0.0:5556
       allowedOrigins: ['*']
+
     oauth2:
       responseTypes: ["code", "token", "id_token"]
       skipApprovalScreen: true
@@ -55,37 +95,16 @@ dex:
       name: OpenLDAP
       id: ldap
       config:
-        # The following configurations seem to work with OpenLDAP:
-        #
-        # 1) Plain LDAP, without TLS:
         host: terrakube-openldap-service:1389
         insecureNoSSL: true
-        #
-        # 2) LDAPS without certificate validation:
-        #host: localhost:636
-        #insecureNoSSL: false
-        #insecureSkipVerify: true
-        #
-        # 3) LDAPS with certificate validation:
-        #host: YOUR-HOSTNAME:636
-        #insecureNoSSL: false
-        #insecureSkipVerify: false
-        #rootCAData: 'CERT'
-        # ...where CERT="$( base64 -w 0 your-cert.crt )"
-
-        # This would normally be a read-only user.
         bindDN: cn=admin,dc=example,dc=org
         bindPW: admin
-
         usernamePrompt: Email Address
 
         userSearch:
           baseDN: ou=users,dc=example,dc=org
           filter: "(objectClass=person)"
           username: mail
-          # "DN" (case sensitive) is a special attribute name. It indicates that
-          # this value should be taken from the entity's DN not an attribute on
-          # the entity.
           idAttr: DN
           emailAttr: mail
           nameAttr: cn
@@ -93,39 +112,40 @@ dex:
         groupSearch:
           baseDN: ou=Groups,dc=example,dc=org
           filter: "(objectClass=groupOfNames)"
-
           userMatchers:
-            # A user is a member of a group when their DN matches
-            # the value of a "member" attribute on the group entity.
           - userAttr: DN
             groupAttr: member
-
-          # The group name should be the "cn" value.
           nameAttr: cn
 
     staticClients:
     - id: example-app
       redirectURIs:
+      ## CRITICO: http:// — coincide con dominio UI sin TLS
       - 'http://terrakube-ui.laptop'
       - '/device/callback'
       - 'http://localhost:10000/login'
       - 'http://localhost:10001/login'
       name: 'example-app'
       public: true
-  volumes:
-  - name: gcp-credentials
-    secret:
-      secretName: terrakube-dex-secrets
-      items:
-      - key: "gcp-credentials"
-        path: "gcp-credentials"
-  volumeMount:
-  - name: gcp-credentials
-    mountPath: /etc/gcp/secret
-    readOnly: true
 
+  ## Nota: el volumen gcp-credentials solo es necesario si usas
+  ## Google Identity. Con OpenLDAP puro no hace falta.
+  ## Lo dejamos comentado para no causar errores si el secret no existe.
+  # volumes:
+  # - name: gcp-credentials
+  #   secret:
+  #     secretName: terrakube-dex-secrets
+  #     items:
+  #     - key: "gcp-credentials"
+  #       path: "gcp-credentials"
+  # volumeMount:
+  # - name: gcp-credentials
+  #   mountPath: /etc/gcp/secret
+  #   readOnly: true
 
-## Terraform Storage
+## ---------------------------------------------------------------
+## Storage — MinIO interno (suficiente para el POC)
+## ---------------------------------------------------------------
 storage:
   defaultStorage: true
   azure:
@@ -150,8 +170,9 @@ storage:
     region: "us-east-1"
     endpoint: ""
 
-
-# Default Storage Minio Configuration
+## ---------------------------------------------------------------
+## MinIO
+## ---------------------------------------------------------------
 minio:
   image:
     repository: bitnamilegacy/minio
@@ -166,7 +187,9 @@ minio:
     rootPassword: "superadmin"
   defaultBuckets: "terrakube"
 
-# Default Database Postgresql
+## ---------------------------------------------------------------
+## PostgreSQL
+## ---------------------------------------------------------------
 postgresql:
   image:
     repository: bitnamilegacy/postgresql
@@ -176,7 +199,9 @@ postgresql:
     password: "terrakubepassword"
     database: "terrakube"
 
-# Default Redis Configuration
+## ---------------------------------------------------------------
+## Redis
+## ---------------------------------------------------------------
 redis:
   image:
     repository: bitnamilegacy/redis
@@ -186,7 +211,9 @@ redis:
     enabled: true
     password: "7p9iWVeRV4S944"
 
-## API properties
+## ---------------------------------------------------------------
+## API
+## ---------------------------------------------------------------
 api:
   existingSecret: false
   enabled: true
@@ -211,8 +238,7 @@ api:
       host: "0.0.0.0"
     traces:
       type: ""
-      # endpoint its just example, change it to your jaeger endpoint
-      endpoint: "http://terrakube-api.laptop:9411/api/v2/spans" 
+      endpoint: "http://terrakube-api.laptop:9411/api/v2/spans"
   rbac:
     create: false
     roleName: "terrakube-api-role"
@@ -263,12 +289,10 @@ api:
     redisPassword: ""
     redisPort: "6379"
     executorUrl: "http://terrakube-executor-service:8090"
-    
-## DONT FORGET TO UPDATE THE PORT DEPENDING OF THE DATABASE BY DEFAULT IS USING THE POSTGRESQL PORT
-## SslMode values are disable, allow, prefer, require, verify-ca, verify-full. Default mode is "disable".   
-## Reference: https://jdbc.postgresql.org/documentation/publicapi/org/postgresql/PGProperty.html#SSL_MODE
 
-## Executor properties
+## ---------------------------------------------------------------
+## Executor
+## ---------------------------------------------------------------
 executor:
   existingSecret: false
   enabled: true
@@ -289,8 +313,7 @@ executor:
       host: "0.0.0.0"
     traces:
       type: jaeger
-      # endpoint its just example, change it to your jaeger endpoint
-      endpoint: "http://terrakube-api.laptop:9411/api/v2/spans" 
+      endpoint: "http://terrakube-api.laptop:9411/api/v2/spans"
   resources: {}
   podLabels: {}
   podAnnotations: {}
@@ -310,7 +333,9 @@ executor:
   livenessProbe:
     periodSeconds: 10
 
-## Registry properties
+## ---------------------------------------------------------------
+## Registry
+## ---------------------------------------------------------------
 registry:
   enabled: true
   existingSecret: false
@@ -332,8 +357,7 @@ registry:
       host: "0.0.0.0"
     traces:
       type: jaeger
-      # endpoint its just example, change it to your jaeger endpoint
-      endpoint: "http://terrakube-api.laptop:9411/api/v2/spans" 
+      endpoint: "http://terrakube-api.laptop:9411/api/v2/spans"
   resources: {}
   podAnnotations: {}
   podLabels: {}
@@ -349,7 +373,9 @@ registry:
   livenessProbe:
     periodSeconds: 10
 
-## UI Properties
+## ---------------------------------------------------------------
+## UI
+## ---------------------------------------------------------------
 ui:
   enabled: true
   existingSecret: false
@@ -368,11 +394,30 @@ ui:
   imagePullSecrets: []
   initContainers: []
 
-## Ingress properties
+## ---------------------------------------------------------------
+## Ingress — Traefik nativo de K3s, TODO en HTTP (sin TLS)
+##
+## POR QUE ingressClassName: "traefik" y NO "nginx":
+##   K3s incluye Traefik por defecto. Usar nginx requeriría instalar
+##   nginx-ingress controller por separado. Para el POC, Traefik es
+##   suficiente con controller: "generic" y sin annotations nginx.
+##
+## POR QUE useTls: false en TODOS:
+##   Mezclar TLS en UI (true) con API sin TLS (false) causa
+##   Mixed Content errors en el browser que bloquean el login OAuth2.
+##   Para el POC, todo HTTP es lo correcto. Agregar TLS después,
+##   cuando el flujo de login esté validado.
+##
+## POR QUE NO hay annotations nginx.ingress.kubernetes.io/*:
+##   Traefik ignora esas annotations. No causan error pero tampoco
+##   funcionan. Se dejan comentadas para referencia futura si
+##   se migra a nginx.
+## ---------------------------------------------------------------
 ingress:
+  ## CRITICO: false — no hay TLS en ningún servicio para el POC
   useTls: false
-  includeTlsHosts: true
-  controller: "generic"  # Options: "generic", "aws", "gke, gatewayapi"
+  includeTlsHosts: false
+  controller: "generic"
 
   gatewayapi:
     apiVersion: v1beta1
@@ -386,11 +431,12 @@ ingress:
     path: "/"
     pathType: "Prefix"
     ingressClassName: "traefik"
-    useTls: true
-    tlsSecretName: tls-secret-ui-terrakube
-    annotations:
-      #nginx.ingress.kubernetes.io/use-regex: "true"
-  
+    ## CRITICO: false — debe coincidir con api y dex issuer (http://)
+    useTls: false
+    annotations: {}
+    ## nginx annotations comentadas — Traefik las ignora
+    # nginx.ingress.kubernetes.io/use-regex: "true"
+
   api:
     enabled: true
     domain: "terrakube-api.laptop"
@@ -398,10 +444,9 @@ ingress:
     pathType: "Prefix"
     ingressClassName: "traefik"
     useTls: false
-    tlsSecretName: tls-secret-api-terrakube
-    annotations:
-      #nginx.ingress.kubernetes.io/use-regex: "true"
-      #nginx.ingress.kubernetes.io/proxy-set-headers: "terrakube/custom-headers"
+    annotations: {}
+    ## nginx annotations comentadas — Traefik las ignora
+    # nginx.ingress.kubernetes.io/use-regex: "true"
 
   registry:
     enabled: true
@@ -410,32 +455,31 @@ ingress:
     pathType: "Prefix"
     ingressClassName: "traefik"
     useTls: false
-    tlsSecretName: tls-secret-reg-terrakube
-    annotations:
-      #nginx.ingress.kubernetes.io/use-regex: "true"
-      #nginx.ingress.kubernetes.io/proxy-set-headers: "terrakube/custom-headers"
+    annotations: {}
+    ## nginx annotations comentadas — Traefik las ignora
+    # nginx.ingress.kubernetes.io/use-regex: "true"
+
   dex:
     enabled: true
     path: "/dex/"
     pathType: "Prefix"
-    annotations:
-      #nginx.ingress.kubernetes.io/use-regex: "true"
-      #nginx.ingress.kubernetes.io/proxy-set-headers: "terrakube/custom-headers"
+    annotations: {}
+    ## nginx annotations comentadas — Traefik las ignora
+    # nginx.ingress.kubernetes.io/use-regex: "true"
+
   executor:
     enabled: false
     domain: "terrakube-executor.laptop"
     path: "/"
     pathType: "Prefix"
     ingressClassName: "traefik"
-    tlsSecretName: tls-secret-executor-terrakube    
-    annotations:
-      #nginx.ingress.kubernetes.io/use-regex: "true"
-  
-  # AWS specific configuration
+    useTls: false
+    annotations: {}
+
+  ## AWS — deshabilitado para K3s
   aws:
     enabled: false
     annotations:
-      # AWS ALB annotations
       kubernetes.io/ingress.class: alb
       alb.ingress.kubernetes.io/scheme: internet-facing
       alb.ingress.kubernetes.io/target-type: ip
@@ -453,13 +497,12 @@ ingress:
     securityGroups: []
     subnets: []
 
-  # GKE specific configuration
+  ## GKE — deshabilitado para K3s
   gke:
     enabled: false
     annotations:
       kubernetes.io/ingress.class: gce
-    # Per-service static IP names for individual load balancers
-    uiStaticIPName: ""         
+    uiStaticIPName: ""
     apiStaticIPName: ""
     registryStaticIPName: ""
     executorStaticIPName: ""
@@ -468,18 +511,33 @@ ingress:
     backendConfig:
       create: false
       timeout: 30
-      # Per-service security policies (optional)
-      uiSecurityPolicy: ""        # Cloud Armor policy for UI (user access restriction)
-      apiSecurityPolicy: ""       # Cloud Armor policy for API (usually empty - external access needed)
-      registrySecurityPolicy: ""  # Cloud Armor policy for Registry (usually empty - external access needed)
-      executorSecurityPolicy: ""  # Cloud Armor policy for Executor (usually empty if exposed)
+      uiSecurityPolicy: ""
+      apiSecurityPolicy: ""
+      registrySecurityPolicy: ""
+      executorSecurityPolicy: ""
     frontendConfig:
       create: false
       redirectToHttps: true
     externalDNS:
-      perIngressProxy:         # Control whether ExternalDNS creates proxy records (Cloudflare)
+      perIngressProxy:
         ui: false
         api: false
         registry: false
         dex: false
         executor: false
+
+## =============================================================
+## PROXIMOS PASOS (despues de validar el login):
+##
+## 1. Agregar TLS con cert-manager + Let's Encrypt (si tenés dominio
+##    publico) o con certificados self-signed para lab interno.
+##
+## 2. Migrar storage de MinIO interno a un bucket S3/Azure/GCP
+##    para simular un ambiente mas real.
+##
+## 3. Configurar un Identity Provider externo (GitHub, Azure AD)
+##    en lugar de OpenLDAP, que es solo para testing.
+##
+## 4. Agregar resources.requests/limits a todos los componentes
+##    para simular constraints de produccion en los 16GB de RAM.
+## =============================================================
